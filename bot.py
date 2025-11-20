@@ -1,7 +1,7 @@
-   import os
+  import os
 import logging
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,8 +12,6 @@ from telegram.ext import (
 )
 import requests
 import json
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -26,11 +24,17 @@ logger = logging.getLogger(__name__)
 
 # Ключи API из переменных окружения
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
-# Executor для выполнения синхронных операций
-executor = ThreadPoolExecutor()
+# Состояния для ConversationHandler
+(
+    TYPE_OBJECT,
+    REGION,
+    ELECTRICITY_BILL,
+    POWER_OUTAGES,
+    FINAL_SUMMARY,
+) = range(5)
 
 # Системный промпт, который задает личность бота
 SYSTEM_PROMPT = """
@@ -62,9 +66,9 @@ SYSTEM_PROMPT = """
 В конце диалога обязательно предложи оставить контакты для инженера.
 """
 
-# Функция для синхронного запроса к DeepSeek API
-def get_deepseek_response_sync(user_message: str, conversation_history: list) -> str:
-    """Синхронно отправляет запрос к DeepSeek API и возвращает ответ."""
+# Функция для запроса к DeepSeek API
+async def get_deepseek_response(user_message: str, conversation_history: list) -> str:
+    """Отправляет запрос к DeepSeek API и возвращает ответ."""
     
     headers = {
         "Content-Type": "application/json",
@@ -80,43 +84,17 @@ def get_deepseek_response_sync(user_message: str, conversation_history: list) ->
         "model": "deepseek-chat",
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 1000,
-        "stream": False
+        "max_tokens": 1000
     }
     
     try:
-        logger.info(f"Отправка запроса к DeepSeek API...")
-        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=60)
+        response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         result = response.json()
-        
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"]
-        else:
-            logger.error(f"Неожиданный формат ответа от API: {result}")
-            return "Извините, произошла ошибка при обработке запроса."
-            
-    except requests.exceptions.Timeout:
-        logger.error("Таймаут при запросе к DeepSeek API")
-        return "Извините, сервис временно недоступен. Пожалуйста, попробуйте позже."
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ошибка сети при запросе к DeepSeek: {e}")
-        return "Извините, произошла ошибка связи. Пожалуйста, попробуйте позже."
+        return result["choices"][0]["message"]["content"]
     except Exception as e:
-        logger.error(f"Неожиданная ошибка при запросе к DeepSeek: {e}")
+        logger.error(f"Ошибка при запросе к DeepSeek: {e}")
         return "Извините, произошла техническая ошибка. Пожалуйста, попробуйте позже."
-
-# Асинхронная обертка для синхронной функции
-async def get_deepseek_response(user_message: str, conversation_history: list) -> str:
-    """Асинхронная обертка для запроса к DeepSeek API."""
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(
-        executor, 
-        get_deepseek_response_sync, 
-        user_message, 
-        conversation_history
-    )
-    return response
 
 # Команда /start - начало диалога
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -132,25 +110,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     await update.message.reply_text(welcome_text)
     
-    # Добавляем приветствие в историю диалога
-    context.user_data['conversation_history'].append({
-        "role": "assistant", 
-        "content": welcome_text
-    })
-    
-    return ConversationHandler.END  # Упрощаем логику - обрабатываем все сообщения одним хэндлером
+    return TYPE_OBJECT
 
-# Обработчик всех текстовых сообщений
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает все текстовые сообщения."""
+# Обработчик ответов пользователя
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает сообщения пользователя и взаимодействует с DeepSeek."""
     
     user_message = update.message.text
     user_id = update.message.from_user.id
-    
-    logger.info(f"Получено сообщение от {user_id}: {user_message}")
-    
-    # Показываем индикатор набора сообщения
-    await update.message.chat.send_action(action="typing")
     
     # Получаем или инициализируем историю диалога для этого пользователя
     if 'conversation_history' not in context.user_data:
@@ -159,81 +126,98 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Добавляем сообщение пользователя в историю
     context.user_data['conversation_history'].append({"role": "user", "content": user_message})
     
-    try:
-        # Получаем ответ от DeepSeek
-        bot_response = await get_deepseek_response(
-            user_message, 
-            context.user_data['conversation_history']
-        )
-        
-        # Добавляем ответ бота в историю
-        context.user_data['conversation_history'].append({"role": "assistant", "content": bot_response})
-        
-        # Отправляем ответ пользователю
-        await update.message.reply_text(bot_response)
-        
-    except Exception as e:
-        logger.error(f"Ошибка в handle_message: {e}")
-        error_text = "Произошла ошибка при обработке вашего сообщения. Пожалуйста, попробуйте еще раз."
-        await update.message.reply_text(error_text)
-
-# Команда /help
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает справку."""
-    help_text = """
-🏡 Домовой Дом Солнца - ваш эксперт по солнечной энергетике.
-
-Я помогу:
-• Подобрать тип солнечной станции для вашего объекта
-• Рассчитать ориентировочную стоимость и окупаемость
-• Ответить на вопросы по солнечной энергетике
-
-Просто напишите мне о вашем объекте и потреблении!
-
-Команды:
-/start - начать консультацию
-/help - показать эту справку
-"""
-    await update.message.reply_text(help_text)
-
-# Обработчик ошибок
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает ошибки."""
-    logger.error(f"Ошибка при обработке сообщения: {context.error}")
+    # Получаем ответ от DeepSeek
+    bot_response = await get_deepseek_response(
+        user_message, 
+        context.user_data['conversation_history']
+    )
     
-    if update and update.message:
-        try:
-            await update.message.reply_text(
-                "Произошла непредвиденная ошибка. Пожалуйста, попробуйте еще раз или напишите /start для начала новой консультации."
-            )
-        except Exception as e:
-            logger.error(f"Ошибка при отправке сообщения об ошибке: {e}")
+    # Добавляем ответ бота в историю
+    context.user_data['conversation_history'].append({"role": "assistant", "content": bot_response})
+    
+    # Отправляем ответ пользователю
+    await update.message.reply_text(bot_response)
+    
+    # Если в ответе бота есть предложение оставить контакты, переходим в финальное состояние
+    if any(keyword in bot_response.lower() for keyword in ['контакт', 'телефон', 'номер', 'инженер']):
+        return FINAL_SUMMARY
+    
+    return TYPE_OBJECT
+
+# Обработчик для сбора контактов
+async def get_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает контактные данные."""
+    
+    contact_text = """Отлично! Для точного расчета инженеру нужны ваши контакты.
+
+Напишите, пожалуйста, ваше имя и номер телефона в формате:
+Иван +7 900 123-45-67"""
+    
+    await update.message.reply_text(contact_text)
+    
+    return FINAL_SUMMARY
+
+# Обработчик финального шага - сохранение контактов
+async def save_contacts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохраняет контактные данные и завершает диалог."""
+    
+    user_contacts = update.message.text
+    
+    # Здесь должна быть логика сохранения контактов (в БД, файл, или отправка куда-то)
+    # Для примера просто логируем
+    logger.info(f"Получены контакты от пользователя {update.message.from_user.id}: {user_contacts}")
+    
+    # Сохраняем контакты в user_data для возможного дальнейшего использования
+    context.user_data['user_contacts'] = user_contacts
+    
+    thank_you_text = """✅ Спасибо! Ваши контакты сохранены.
+
+Инженер свяжется с вами в ближайшее время для бесплатного замера и точного расчета.
+
+До связи! 🏡"""
+    
+    await update.message.reply_text(thank_you_text)
+    
+    # Очищаем данные диалога
+    context.user_data.clear()
+    
+    return ConversationHandler.END
+
+# Команда /cancel для отмены диалога
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет диалог."""
+    await update.message.reply_text(
+        "Диалог прерван. Если потребуется консультация - напишите /start",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # Основная функция
 def main() -> None:
     """Запускает бота."""
     
-    # Проверяем наличие обязательных переменных
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN не установлен!")
-        return
-    if not DEEPSEEK_API_KEY:
-        logger.error("DEEPSEEK_API_KEY не установлен!")
-        return
-    
     # Создаем Application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Настраиваем ConversationHandler для управления диалогом
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            TYPE_OBJECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message)
+            ],
+            FINAL_SUMMARY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_contacts)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
     
-    # Добавляем обработчик ошибок
-    application.add_error_handler(error_handler)
+    application.add_handler(conv_handler)
     
     # Запускаем бота
-    logger.info("Бот запущен...")
+    print("Бот запущен...")
     application.run_polling()
 
 if __name__ == "__main__":
