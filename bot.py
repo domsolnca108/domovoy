@@ -61,7 +61,7 @@ async def ask_groq(prompt: str) -> str:
     }
 
     payload = {
-        "model": "llama3-8b-8192",   # стабильная и быстрая модель Groq
+        "model": "llama3-70b-8192",   # стабильная и быстрая модель Groq
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
