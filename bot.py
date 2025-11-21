@@ -28,7 +28,7 @@ def _require_env(name: str) -> str | None:
 
 TELEGRAM_BOT_TOKEN = _require_env("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = _require_env("GROQ_API_KEY")
-
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # не обязательная, поэтому без _require_env
 
 def _ensure_config() -> bool:
     """Проверить, что все обязательные переменные окружения заданы."""
@@ -254,6 +254,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lead["phone"] = phone
         lead["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_lead(str(update.message.from_user.id), lead)
+        
+        # Отправляем заявку хозяину/менеджеру в Telegram, если указан ADMIN_CHAT_ID
+        if ADMIN_CHAT_ID:
+            try:
+                await context.application.bot.send_message(
+                    chat_id=int(ADMIN_CHAT_ID),
+                    text=(
+                        "🆕 Новая заявка от Домового:\n"
+                        f"• Имя: {lead.get('name', '—')}\n"
+                        f"• Телефон: {phone}\n"
+                        f"• Объект: {lead.get('object', '—')}\n"
+                        f"• Регион: {lead.get('region', '—')}\n"
+                        f"• Счёт за свет: {lead.get('bill', '—')}\n"
+                        f"• Время: {lead.get('timestamp')}"
+                    )
+                )
+            except Exception as e:
+                logger.error("Не удалось отправить лид администратору: %s", e)
 
         context.user_data["stage"] = "done"
         context.user_data["lead"] = lead
