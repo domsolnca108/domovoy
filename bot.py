@@ -1,8 +1,64 @@
 diff --git a/bot.py b/bot.py
-index 5ba1eca609e9c12be1a9a9b43b6318f482dc0fbd..6782f96deb87fbd31fb84420658bb328bd3ecd87 100644
+index 5ba1eca609e9c12be1a9a9b43b6318f482dc0fbd..992463a6b2e42a084c1fd59ef199629800d94bd2 100644
 --- a/bot.py
 +++ b/bot.py
-@@ -108,165 +108,227 @@ def estimate_station(object_type, region, payment):
+@@ -1,42 +1,53 @@
+ import os
+ import json
+ import re
+ import logging
+ import aiohttp
+ from datetime import datetime
+ from telegram import Update
+ from telegram.ext import (
+     ApplicationBuilder, CommandHandler, MessageHandler,
+     ContextTypes, filters
+ )
+ 
+ logging.basicConfig(level=logging.INFO)
+ logger = logging.getLogger(__name__)
+ 
+-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
++def _require_env(name: str) -> str:
++    """Получить обязательную переменную окружения или завершить работу с понятной ошибкой."""
++    value = os.getenv(name)
++    if not value:
++        raise RuntimeError(
++            f"Ожидается переменная окружения {name}, но она не задана. "
++            f"Добавьте её в настройки и перезапустите бота."
++        )
++    return value
++
++
++TELEGRAM_BOT_TOKEN = _require_env("TELEGRAM_BOT_TOKEN")
++GROQ_API_KEY = _require_env("GROQ_API_KEY")
+ 
+ LEADS_FILE = "leads.json"
+ 
+ # ===========================
+ # SYSTEM PROMPT
+ # ===========================
+ SYSTEM_PROMPT = """
+ Ты — Домовой Дом Солнца ☀️
+ Мягкий, умный, дружелюбный ассистент.
+ Общаешься свободно и живо, как ИИ-помощник, но мягко подводишь к продажам солнечной электростанции.
+ 
+ ТВОЯ ЛОГИКА (ОЧЕНЬ ВАЖНО):
+ 1. Поддерживай свободный диалог. Можно болтать, шутить, отвечать на любые темы.
+ 2. Если видишь, что пользователь говорит про дом/электроэнергию/счета — начинай СБОР ДАННЫХ:
+    - тип объекта
+    - регион
+    - платеж в месяц
+ 3. После получения трёх параметров — СДЕЛАЙ АНАЛИЗ (кратко, по делу).
+ 4. После анализа — спроси:
+    "Хочешь расчёт инженера? Напиши имя и номер телефона."
+ 5. Когда человек прислал телефон — НЕ ЗАДАВАЙ НОВЫХ ВОПРОСОВ.
+    Просто:
+    - поблагодари
+    - скажи, что инженер свяжется
+    - дай бонус (совет, пример окупаемости)
+@@ -108,165 +119,227 @@ def estimate_station(object_type, region, payment):
      if payment < 2500:
          stype = "Сетевая"
          size = "3–5 кВт"
@@ -266,6 +322,4 @@ index 5ba1eca609e9c12be1a9a9b43b6318f482dc0fbd..6782f96deb87fbd31fb84420658bb328
  
  if __name__ == "__main__":
      main()
- 
-
  
