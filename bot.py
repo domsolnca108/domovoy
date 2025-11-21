@@ -99,6 +99,36 @@ def save_lead(user_id, lead_data):
 # ===========================
 # ОБРАБОТЧИКИ КОМАНД
 # ===========================
+def extract_numbers(text):
+    match = re.search(r"\d{3,6}", text)
+    return int(match.group(0)) if match else None
+def estimate_station(object_type, region, payment):
+    payment = int(re.sub(r"\D", "", payment)) if isinstance(payment, str) else payment
+
+    if payment < 2500:
+        stype = "Сетевая"
+        size = "3–5 кВт"
+        price = "170–260 тыс. руб."
+    elif payment < 6000:
+        stype = "Гибридная"
+        size = "5–10 кВт"
+        price = "280–480 тыс. руб."
+    else:
+        stype = "Гибридная / Автономная"
+        size = "10–15 кВт"
+        price = "620–950 тыс. руб."
+
+    return (
+        f"📊 *Предварительный расчёт станции*\n\n"
+        f"🏠 Объект: {object_type}\n"
+        f"📍 Регион: {region}\n"
+        f"⚡ Платёж: {payment} руб/мес\n\n"
+        f"Тип: *{stype}*\n"
+        f"Мощность: *{size}*\n"
+        f"Стоимость: *{price}*\n\n"
+        f"Могу передать инженеру для точного расчёта. "
+        f"Хочешь? Напиши имя и номер телефона."
+    )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["stage"] = "chat"
@@ -154,17 +184,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----------------------------------------
     # ЭТАП 3 — ПЛАТЁЖ
     # ----------------------------------------
-    if stage == "waiting_for_bill":
-        lead["bill"] = text
-        context.user_data["stage"] = "waiting_for_name"
+ 
+if stage == "waiting_for_bill":
+    lead["bill"] = text
+    context.user_data["lead"] = lead
 
-        summary = f"{lead}"
-        groq_answer = await ask_groq(f"Параметры клиента: {summary}. Дай анализ.")
+    # расчёт станции
+    object_type = lead.get("object")
+    region = lead.get("region")
+    payment = text
 
-        await update.message.reply_text(
-            groq_answer + "\n\nКак тебя зовут? 😊"
-        )
-        return
+    estimate = estimate_station(object_type, region, payment)
+
+    await update.message.reply_text(estimate)
+
+    context.user_data["stage"] = "waiting_for_name"
+    await update.message.reply_text("Как тебя зовут? 😊")
+    return
 
     # ----------------------------------------
     # ЭТАП 2 — РЕГИОН
@@ -195,22 +231,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ----------------------------------------
     # СВОБОДНЫЙ ЧАТ (начало)
     # ----------------------------------------
-    if stage == "chat":
-        # Если человек говорит про дом, свет, счета → запуск сбора данных
-        triggers = ["дом", "квартира", "дача", "свет", "электричество", "квт", "оплата", "сэс"]
+ if stage == "chat":
+    # если человек сам пишет набор данных — делаем автоанализ
+    payment = extract_numbers(text)
+    if payment and any(w in text.lower() for w in ["дом", "квартира", "дача"]):
+        lead["object"] = "дом"
+        lead["region"] = "регион не указан"
+        lead["bill"] = payment
 
-        if any(word in text.lower() for word in triggers):
-            context.user_data["stage"] = "waiting_for_object"
-            await update.message.reply_text(
-                "Хочешь — рассчитаю станцию 🔆\n"
-                "Для этого напиши, что за объект (дом, дача, бизнес)?"
-            )
-            return
+        estimate = estimate_station(lead["object"], lead["region"], payment)
 
-        # Иначе — обычный ИИ-ответ
-        reply = await ask_groq(text)
-        await update.message.reply_text(reply)
+        await update.message.reply_text(estimate)
+        await update.message.reply_text("Хочешь точный расчёт? Напиши имя и номер телефона.")
+        context.user_data["stage"] = "waiting_for_name"
+        context.user_data["lead"] = lead
         return
+
+    # обычное общение через GROQ
+    reply = await ask_groq(text)
+    await update.message.reply_text(reply)
+    return
+
 
 
 # ===========================
