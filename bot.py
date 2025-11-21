@@ -13,6 +13,7 @@ from telegram.ext import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def _require_env(name: str) -> str | None:
     """Получить обязательную переменную окружения и логировать ошибку, если её нет."""
     value = os.getenv(name)
@@ -31,10 +32,14 @@ GROQ_API_KEY = _require_env("GROQ_API_KEY")
 
 def _ensure_config() -> bool:
     """Проверить, что все обязательные переменные окружения заданы."""
-    missing = [name for name, value in {
-        "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
-        "GROQ_API_KEY": GROQ_API_KEY,
-    }.items() if not value]
+    missing = [
+        name
+        for name, value in {
+            "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
+            "GROQ_API_KEY": GROQ_API_KEY,
+        }.items()
+        if not value
+    ]
 
     if missing:
         logger.error(
@@ -44,6 +49,7 @@ def _ensure_config() -> bool:
         )
         return False
     return True
+
 
 LEADS_FILE = "leads.json"
 
@@ -78,7 +84,7 @@ SYSTEM_PROMPT = """
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ===========================
 
-def extract_phone(text):
+def extract_phone(text: str) -> str | None:
     pattern = r'(\+7|8)\s?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
     match = re.search(pattern, text)
     return match.group(0) if match else None
@@ -88,18 +94,19 @@ async def ask_groq(prompt: str) -> str:
     """Отправка запроса к GROQ"""
     if not GROQ_API_KEY:
         return "Groq API не настроен: отсутствует GROQ_API_KEY."
+
     url = "https://api.groq.com/openai/v1/chat/completions"
     payload = {
         "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
-        "temperature": 0.6
+        "temperature": 0.6,
     }
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     async with aiohttp.ClientSession() as session:
@@ -110,10 +117,29 @@ async def ask_groq(prompt: str) -> str:
             return data["choices"][0]["message"]["content"]
 
 
-def save_lead(user_id, lead_data):
+def save_lead(user_id: str, lead_data: dict) -> None:
     """Сохраняем лид в leads.json"""
     if not os.path.exists(LEADS_FILE):
-@@ -108,165 +140,230 @@ def estimate_station(object_type, region, payment):
+        with open(LEADS_FILE, "w", encoding="utf-8") as f:
+            json.dump({}, f, ensure_ascii=False, indent=2)
+
+    with open(LEADS_FILE, "r", encoding="utf-8") as f:
+        try:
+            all_leads = json.load(f)
+        except json.JSONDecodeError:
+            all_leads = {}
+
+    all_leads[user_id] = lead_data
+
+    with open(LEADS_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_leads, f, ensure_ascii=False, indent=2)
+
+    logger.info("Лид сохранён: %s", lead_data)
+
+
+# (оставляем эту функцию, т.к. она была в диффе — как дополнительный вариант расчёта)
+def estimate_station(object_type: str, region: str, payment: int) -> str:
+    """Примерная оценка станции по объекту, региону и платёжке."""
     if payment < 2500:
         stype = "Сетевая"
         size = "3–5 кВт"
@@ -128,15 +154,15 @@ def save_lead(user_id, lead_data):
         price = "620–950 тыс. руб."
 
     return (
-        f"📊 *Предварительный расчёт станции*\n\n"
+        "📊 *Предварительный расчёт станции*\n\n"
         f"🏠 Объект: {object_type}\n"
         f"📍 Регион: {region}\n"
         f"⚡ Платёж: {payment} руб/мес\n\n"
         f"Тип: *{stype}*\n"
         f"Мощность: *{size}*\n"
         f"Стоимость: *{price}*\n\n"
-        f"Могу передать инженеру для точного расчёта. "
-        f"Хочешь? Напиши имя и номер телефона."
+        "Могу передать инженеру для точного расчёта. "
+        "Хочешь? Напиши имя и номер телефона."
     )
 
 
@@ -192,6 +218,10 @@ def calculate_solar_options(lead: dict) -> str:
     return text
 
 
+# ===========================
+# ОБРАБОТЧИКИ
+# ===========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["stage"] = "chat"
     context.user_data["lead"] = {}
@@ -230,8 +260,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             f"Спасибо, {lead.get('name', '')}! 🙌\n"
-            "Инженер перезвонит на номер {phone} в ближайшее время.\n"
-      "Если хочешь — могу ещё подсказать по окупаемости или доработке проекта."
+            f"Инженер перезвонит на номер {phone} в ближайшее время.\n"
+            "Если хочешь — могу ещё подсказать по окупаемости или доработке проекта."
         )
         return
 
@@ -246,14 +276,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ----------------------------------------
-  # ЭТАП 3 — ПЛАТЁЖ + РАСЧЁТ СТАНЦИИ
- if stage == "waiting_for_bill":
+    # ЭТАП 3 — ПЛАТЁЖ + РАСЧЁТ СТАНЦИИ
+    # ----------------------------------------
+    if stage == "waiting_for_bill":
         lead["bill"] = text
         context.user_data["lead"] = lead
         context.user_data["stage"] = "waiting_for_name"
-     # 1) наш инженерный черновой калькулятор
+
+        # 1) наш инженерный черновой калькулятор
         calc_text = calculate_solar_options(lead)
-     # 2) комментарий от нейросети, как от «инженера-консультанта»
+
+        # 2) комментарий от нейросети, как от «инженера-консультанта»
         ai_comment = await ask_groq(
             "Вот данные клиента и предварительный инженерный расчёт. "
             "Аккуратно подтверди или скорректируй оценку, добавь 2–3 практичных совета. "
@@ -261,7 +294,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Данные клиента: {json.dumps(lead, ensure_ascii=False)}\n\n"
             f"Черновая оценка: {calc_text}"
         )
-await update.message.reply_text(calc_text)
+
+        await update.message.reply_text(calc_text)
         await update.message.reply_text(ai_comment)
         await update.message.reply_text("Если всё в целом подходит — как тебя зовут? 🙂")
         return
@@ -296,12 +330,13 @@ await update.message.reply_text(calc_text)
 
     # ----------------------------------------
     # СВОБОДНЫЙ ЧАТ (начало) — stage == "chat"
-  if stage == "chat":
+    # ----------------------------------------
+    if stage == "chat":
         # Если человек говорит про дом, свет, счета → запуск сбора данных
         triggers = [
             "дом", "квартира", "дача", "коттедж",
             "электричество", "свет", "квт", "кВт",
-            "счёт", "оплата", "энергия", "сэс", "солнечн"
+            "счёт", "оплата", "энергия", "сэс", "солнечн",
         ]
 
         if any(word in text.lower() for word in triggers):
@@ -312,11 +347,11 @@ await update.message.reply_text(calc_text)
                 "Для начала — что за объект (дом, дача, бизнес)?"
             )
             return
+
         # Иначе — обычный ИИ-ответ (болтовня, советы и т.д.)
         reply = await ask_groq(text)
         await update.message.reply_text(reply)
         return
-
 
 
 # ===========================
@@ -337,4 +372,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
