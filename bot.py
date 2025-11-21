@@ -53,6 +53,9 @@ def _ensure_config() -> bool:
 
 LEADS_FILE = "leads.json"
 
+# сюда добавляем
+ADMIN_CHAT_ID = 975913881  # твой личный Telegram ID
+
 # ===========================
 # SYSTEM PROMPT
 # ===========================
