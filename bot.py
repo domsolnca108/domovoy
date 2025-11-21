@@ -28,7 +28,7 @@ def _require_env(name: str) -> str | None:
 
 TELEGRAM_BOT_TOKEN = _require_env("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = _require_env("GROQ_API_KEY")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # не обязательная, поэтому без _require_env
+ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")  # не обязательная, поэтому без _require_env
 
 def _ensure_config() -> bool:
     """Проверить, что все обязательные переменные окружения заданы."""
@@ -52,9 +52,9 @@ def _ensure_config() -> bool:
 
 
 LEADS_FILE = "leads.json"
+ADMIN_CHANNEL_ID = -1003065941838  # канал "Дом Солнца – Заявки от Домового"
 
-# сюда добавляем
-ADMIN_CHAT_ID = 975913881  # твой личный Telegram ID
+
 
 # ===========================
 # SYSTEM PROMPT
@@ -325,11 +325,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lead["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_lead(str(update.message.from_user.id), lead)
         
-        # Отправляем заявку хозяину/менеджеру в Telegram, если указан ADMIN_CHAT_ID
-        if ADMIN_CHAT_ID:
+        # Отправляем заявку хозяину/менеджеру в Telegram, если указан ADMIN_CHANNEL_ID
+        if ADMIN_CHANNEL_ID:
             try:
                 await context.application.bot.send_message(
-                    chat_id=int(ADMIN_CHAT_ID),
+                    chat_id=int(ADMIN_CHANNEL_ID),
                     text=(
                         "🆕 Новая заявка от Домового:\n"
                         f"• Имя: {lead.get('name', '—')}\n"
