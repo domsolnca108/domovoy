@@ -27,8 +27,9 @@ def _require_env(name: str) -> str | None:
 
 
 TELEGRAM_BOT_TOKEN = _require_env("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = _require_env("GROQ_API_KEY")
+OPENAI_API_KEY = _require_env("OPENAI_API_KEY")  # <-- теперь используем OpenAI
 ADMIN_CHANNEL_ID = os.getenv("ADMIN_CHANNEL_ID")  # не обязательная, поэтому без _require_env
+
 
 def _ensure_config() -> bool:
     """Проверить, что все обязательные переменные окружения заданы."""
@@ -36,7 +37,7 @@ def _ensure_config() -> bool:
         name
         for name, value in {
             "TELEGRAM_BOT_TOKEN": TELEGRAM_BOT_TOKEN,
-            "GROQ_API_KEY": GROQ_API_KEY,
+            "OPENAI_API_KEY": OPENAI_API_KEY,
         }.items()
         if not value
     ]
@@ -53,7 +54,6 @@ def _ensure_config() -> bool:
 
 LEADS_FILE = "leads.json"
 ADMIN_CHANNEL_ID = -1003065941838  # канал "Дом Солнца – Заявки от Домового"
-
 
 
 # ===========================
@@ -160,31 +160,60 @@ def extract_phone(text: str) -> str | None:
     return match.group(0) if match else None
 
 
-async def ask_groq(prompt: str) -> str:
-    """Отправка запроса к GROQ"""
-    if not GROQ_API_KEY:
-        return "Groq API не настроен: отсутствует GROQ_API_KEY."
+async def ask_openai(prompt: str) -> str:
+    """
+    Отправка запроса к OpenAI (модель o1-mini через /v1/responses).
+    """
+    if not OPENAI_API_KEY:
+        return "OpenAI API не настроен: отсутствует OPENAI_API_KEY."
 
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    url = "https://api.openai.com/v1/responses"
+
+    # Для o1-mini используем Responses API: передаём единый текст,
+    # в котором уже есть системные инструкции и сообщение пользователя.
+    full_input = (
+        SYSTEM_PROMPT
+        + "\n\n"
+        + "Пользователь пишет:\n"
+        + prompt
+        + "\n\n"
+        + "Дай ответ пользователю в этом же стиле."
+    )
+
     payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.6,
+        "model": "o1-mini",
+        "input": full_input,
+        "max_output_tokens": 800,
     }
+
     headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
         "Content-Type": "application/json",
     }
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status != 200:
-                return f"Ошибка Groq API: {await resp.text()}"
+                text = await resp.text()
+                logger.error("Ошибка OpenAI API: %s", text)
+                return f"Ошибка OpenAI API: {text}"
+
             data = await resp.json()
-            return data["choices"][0]["message"]["content"]
+
+            # Пытаемся вытащить текст из разных полей (в зависимости от формата ответа)
+            text = data.get("output_text")
+            if not text:
+                parts = []
+                for item in data.get("output", []):
+                    for c in item.get("content", []):
+                        if c.get("type") in ("output_text", "text"):
+                            parts.append(c.get("text", ""))
+                text = "".join(parts)
+
+            if not text:
+                text = "Не получилось получить ответ от модели, попробуй спросить ещё раз."
+
+            return text
 
 
 def save_lead(user_id: str, lead_data: dict) -> None:
@@ -207,7 +236,6 @@ def save_lead(user_id: str, lead_data: dict) -> None:
     logger.info("Лид сохранён: %s", lead_data)
 
 
-# (оставляем эту функцию, т.к. она была в диффе — как дополнительный вариант расчёта)
 def estimate_station(object_type: str, region: str, payment: int) -> str:
     """Примерная оценка станции по объекту, региону и платёжке."""
     if payment < 2500:
@@ -324,7 +352,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lead["phone"] = phone
         lead["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         save_lead(str(update.message.from_user.id), lead)
-        
+
         # Отправляем заявку хозяину/менеджеру в Telegram, если указан ADMIN_CHANNEL_ID
         if ADMIN_CHANNEL_ID:
             try:
@@ -375,7 +403,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         calc_text = calculate_solar_options(lead)
 
         # 2) комментарий от нейросети, как от «инженера-консультанта»
-        ai_comment = await ask_groq(
+        ai_comment = await ask_openai(
             "Вот данные клиента и предварительный инженерный расчёт. "
             "Аккуратно подтверди или скорректируй оценку, добавь 2–3 практичных совета. "
             "Не проси повторно имя/телефон и не собирай данные ещё раз.\n\n"
@@ -412,7 +440,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ЭТАП DONE — лид собран, дальше свободный ИИ-диалог
     # ----------------------------------------
     if stage == "done":
-        reply = await ask_groq(text)
+        reply = await ask_openai(text)
         await update.message.reply_text(reply)
         return
 
@@ -431,13 +459,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["stage"] = "waiting_for_object"
             context.user_data["lead"] = {}
             await update.message.reply_text(
-                "Могу прикинуть солнечную станцию 🔆\n"
+                "Вижу, тебя интересует тема света и счетов 🔆\n"
+                "Давай прикинем солнечную станцию.\n"
                 "Для начала — что за объект (дом, дача, бизнес)?"
             )
             return
 
         # Иначе — обычный ИИ-ответ (болтовня, советы и т.д.)
-        reply = await ask_groq(text)
+        reply = await ask_openai(text)
         await update.message.reply_text(reply)
         return
 
@@ -460,3 +489,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
