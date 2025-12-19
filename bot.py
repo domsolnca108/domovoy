@@ -183,7 +183,7 @@ async def ask_openai(prompt: str) -> str:
     )
 
     payload = {
-        "model": "o1-mini",
+        "model": "gpt-4o-mini",
         "input": full_input,
         "max_output_tokens": 800,
     }
